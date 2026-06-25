@@ -148,6 +148,44 @@ if ($uwpManifests.Count -gt 0) {
     }
 }
 
+# ─── 2a-ii. Inject extension warning into scaffold Package.appxmanifest ──────────
+# Extensions that MUST be removed (will cause AppX registration failure 0x80073CF6):
+$removeExtensions = @(
+    'windows.dialProtocol',
+    'windows.appService',
+    'windows.backgroundTasks'
+)
+$detectedRemoveExts = @($uwpManifestExtensions | Where-Object { $_ -in $removeExtensions })
+if ($detectedRemoveExts.Count -gt 0) {
+    $scaffoldManifest = Get-ChildItem -Path $Target -Filter 'Package.appxmanifest' -File -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -notmatch '\\(bin|obj|\.uwp-source|\.vs|\.git)\\' } | Select-Object -First 1
+    if ($scaffoldManifest) {
+        $mBody = [System.IO.File]::ReadAllText($scaffoldManifest.FullName)
+        $marker = '<!-- ext-removal-warning:Initialize-UwpMigration -->'
+        if (-not $mBody.Contains($marker)) {
+            $warningLines = @($marker)
+            $warningLines += '<!--'
+            $warningLines += '  ╔══════════════════════════════════════════════════════════════════════╗'
+            $warningLines += '  ║ WARNING: DO NOT add the following UWP extensions to this manifest.  ║'
+            $warningLines += '  ║ They are UWP-only and WILL CAUSE AppX registration failure.         ║'
+            $warningLines += '  ╚══════════════════════════════════════════════════════════════════════╝'
+            foreach ($ext in $detectedRemoveExts) {
+                $warningLines += "  FORBIDDEN: $ext — Remove entirely, see PATTERNS.md#manifest-extensions"
+            }
+            $warningLines += '  The underlying APIs (e.g. casting, background) still work WITHOUT these extensions.'
+            $warningLines += '-->'
+            $warningBlock = ($warningLines -join "`n") + "`n"
+            # Insert before </Package> closing tag
+            $closeIdx = $mBody.LastIndexOf('</Package>')
+            if ($closeIdx -gt 0) {
+                $mBody = $mBody.Substring(0, $closeIdx) + $warningBlock + $mBody.Substring($closeIdx)
+                [System.IO.File]::WriteAllText($scaffoldManifest.FullName, $mBody)
+                Write-Host "    Injected extension-removal warning into $($scaffoldManifest.Name) for: $($detectedRemoveExts -join ', ')"
+            }
+        }
+    }
+}
+
 # ─── 2b. Patch WinUI 3 .csproj RuntimeIdentifier for cross-arch F5 ─────────────
 # `dotnet new winui` ties RuntimeIdentifier to the host's ProcessArchitecture instead of $(Platform). On an ARM64 host VS often opens the project with solution platform x64, so PlatformTarget=x64 but RID=win-arm64 → NETSDK1083 "platform 'win-arm64' and PlatformTarget 'x64' must be compatible". Inject Platform-aware RID overrides ahead of the host-arch fallback so F5 works on any host without requiring users to switch the active platform manually. Idempotent via a marker comment.
 $ridFixMarker = '<!-- arm64-f5-fix:Initialize-UwpMigration -->'

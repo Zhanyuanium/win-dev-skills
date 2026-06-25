@@ -165,6 +165,10 @@ Validator checks: residue grep (no `Windows.UI.Xaml` / unsupported APIs in non-d
 - Never fabricate API calls. If unsure of the WinUI 3 equivalent, fetch the relevant anchor via `Get-MigrationPattern.ps1`, or consult the official [API mapping table](https://learn.microsoft.com/windows/apps/windows-app-sdk/migrate-to-windows-app-sdk/api-mapping-table).
 - **Do not add new `defer` rows.** The bootstrap already decided which files are deferred (any file with an unsupported-API hit). Refine the rationale in `MIGRATION-DEFERRED.md` if needed, but do not move a row from `migrate-with-adaptation` → `defer` to dodge a hard TODO. "Looks complex" / "not core to demo" / "redundant" are **not** valid reasons.
 
+### Manifest extensions — NEVER add "Remove" extensions
+
+`MIGRATION-MAPPING.md` lists UWP extensions from the original manifest. If the scaffold `Package.appxmanifest` contains a `<!-- ext-removal-warning -->` comment, those extensions are **FORBIDDEN** — adding them causes AppX registration failure (`0x80073CF6`). Specifically: `windows.dialProtocol`, `windows.appService`, `windows.backgroundTasks` must NEVER appear in the WinUI 3 manifest. The underlying APIs (casting, background work) still function without the manifest extension. Consult `PATTERNS.md#manifest-extensions` for full table.
+
 ### Comment hygiene
 
 Don't name UWP API identifiers in code comments, commit messages, or anywhere they'll be re-fed into context — comments like `// Replaces SomeOldType.SomeMethod()` inflate API-name density in later turns and the validator's residue grep also matches inside comments. Instead use anchor references: when you fix a TODO, **delete the TODO line entirely** in the same edit; if you genuinely need a future-reader note, write `// See PATTERNS.md#<anchor>` and stop there.
