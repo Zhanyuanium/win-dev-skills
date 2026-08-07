@@ -62,6 +62,90 @@ if ($ExtraArgs -contains '--symbols') {
 # Extra args are MSBuild-style flags like /p:Platform=x64
 $extraArgs = $ExtraArgs
 
+function Get-EvaluatedProjectBuildData {
+    param(
+        [string]$ProjectPath,
+        [string]$Platform,
+        [string]$Configuration
+    )
+
+    try {
+        $output = & dotnet msbuild $ProjectPath `
+            "-p:Platform=$Platform" `
+            "-p:Configuration=$Configuration" `
+            "-getItem:AppxManifest,CustomAppxManifest" `
+            "-getProperty:CustomAfterMicrosoftCommonTargets" `
+            -nologo -verbosity:quiet 2>$null | Out-String
+        if ($LASTEXITCODE -eq 0 -and $output.Trim()) {
+            return $output | ConvertFrom-Json
+        }
+    } catch {
+        # The normal build will surface evaluation failures with full diagnostics.
+    }
+
+    return $null
+}
+
+function Test-AppxManifestCapabilityOrder {
+    param(
+        [string]$ProjectPath,
+        [object]$BuildData
+    )
+
+    $projectDirectory = Split-Path (Resolve-Path $ProjectPath) -Parent
+    $manifestPaths = @()
+    if ($BuildData.Items) {
+        foreach ($itemName in @("AppxManifest", "CustomAppxManifest")) {
+            foreach ($item in @($BuildData.Items.$itemName)) {
+                if ($item.FullPath -and (Test-Path -LiteralPath $item.FullPath)) {
+                    $manifestPaths += $item.FullPath
+                }
+            }
+        }
+    }
+    if ($manifestPaths.Count -eq 0) {
+        $defaultManifest = Join-Path $projectDirectory "Package.appxmanifest"
+        if (Test-Path -LiteralPath $defaultManifest) {
+            $manifestPaths = @($defaultManifest)
+        }
+    }
+
+    foreach ($manifestPath in $manifestPaths) {
+        try {
+            [xml]$manifest = Get-Content -LiteralPath $manifestPath -Raw
+        } catch {
+            Write-Host "ERROR: Invalid app manifest XML: $manifestPath" -ForegroundColor Red
+            Write-Host "       $($_.Exception.Message)" -ForegroundColor Red
+            return $false
+        }
+
+        $capabilities = @($manifest.SelectNodes("/*[local-name()='Package']/*[local-name()='Capabilities']/*"))
+        $highestCapabilityPhase = -1
+        foreach ($capability in $capabilities) {
+            $capabilityPhase = switch ($capability.LocalName) {
+                "DeviceCapability" { 2 }
+                "CustomCapability" { 1 }
+                default { 0 }
+            }
+            if ($capabilityPhase -lt $highestCapabilityPhase) {
+                $elementName = if ($capability.Prefix) {
+                    "$($capability.Prefix):$($capability.LocalName)"
+                } else {
+                    $capability.LocalName
+                }
+                Write-Host "ERROR: Invalid capability order in $(Split-Path $manifestPath -Leaf)." -ForegroundColor Red
+                Write-Host "       <$elementName> appears after a later capability category." -ForegroundColor Red
+                Write-Host "       Required order: Capability, CustomCapability, then DeviceCapability." -ForegroundColor Red
+                Write-Host "       MSBuild can accept this ordering, but MSIX registration rejects it with 0xC00CE014." -ForegroundColor Yellow
+                return $false
+            }
+            $highestCapabilityPhase = [math]::Max($highestCapabilityPhase, $capabilityPhase)
+        }
+    }
+
+    return $true
+}
+
 # -- 0. Check Developer Mode --
 $devMode = $false
 try {
@@ -105,6 +189,14 @@ $hasRestore = $extraArgs | Where-Object { $_ -match "^[/|-]restore$|^[/|-]t:rest
 if ($hasPlatform -and $hasPlatform -match "Platform=(\w+)") { $detectedPlatform = $Matches[1] }
 if ($hasConfig -and $hasConfig -match "Configuration=(\w+)") { $detectedConfig = $Matches[1] }
 
+$projectBuildData = Get-EvaluatedProjectBuildData `
+    -ProjectPath $Project `
+    -Platform $detectedPlatform `
+    -Configuration $detectedConfig
+if (-not (Test-AppxManifestCapabilityOrder -ProjectPath $Project -BuildData $projectBuildData)) {
+    exit 1
+}
+
 $autoArgs = @()
 if (-not $hasPlatform) { $autoArgs += "/p:Platform=$detectedPlatform" }
 if (-not $hasConfig)   { $autoArgs += "/p:Configuration=$detectedConfig" }
@@ -145,37 +237,35 @@ if (-not (Test-Path $analyzerDll)) {
     $analyzerTargets = Join-Path $scriptDir "..\..\tools\winui-analyzer\Microsoft.WindowsAppSDK.Analyzers\Microsoft.WindowsAppSDK.Analyzers.targets"
 }
 
-$analyzerArgs = @()
-$tempBuildProps = $null
+$tempAnalyzerTargets = $null
+$migrationBlockingDiagnostics = "WUI0001;WUI0002;WUI0003;WUI0004;WUI0005;WUI2003"
 if (Test-Path $analyzerDll) {
     $analyzerDll = (Resolve-Path $analyzerDll).Path
     $analyzerTargets = (Resolve-Path $analyzerTargets).Path
 
-    # Inject via temporary Directory.Build.props (works with both MSBuild and dotnet build)
     $projectDir = Split-Path (Resolve-Path $Project) -Parent
     if (-not $projectDir) { $projectDir = "." }
-    $tempBuildProps = Join-Path $projectDir "Directory.Build.props"
-    $existingProps = $null
-
-    if (Test-Path $tempBuildProps) {
-        $existingProps = Get-Content $tempBuildProps -Raw
+    $tempAnalyzerTargets = Join-Path $projectDir ".winapp-analyzers-$([guid]::NewGuid().ToString('N')).targets"
+    $escapedAnalyzerDll = [Security.SecurityElement]::Escape($analyzerDll)
+    $escapedAnalyzerTargets = [Security.SecurityElement]::Escape($analyzerTargets)
+    $existingCustomTargets = @(
+        "$($projectBuildData.Properties.CustomAfterMicrosoftCommonTargets)" -split ';' |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    )
+    $existingImports = $existingCustomTargets | ForEach-Object {
+        $escapedPath = [Security.SecurityElement]::Escape($_)
+        "  <Import Project=`"$escapedPath`" />"
     }
-
-    # Only create if one doesn't already exist (don't overwrite user's file)
-    if (-not $existingProps) {
-        @"
+    @"
 <Project>
+$($existingImports -join [Environment]::NewLine)
   <ItemGroup>
-    <Analyzer Include="$analyzerDll" />
+    <Analyzer Include="$escapedAnalyzerDll" />
   </ItemGroup>
-  <Import Project="$analyzerTargets" />
+  <Import Project="$escapedAnalyzerTargets" />
 </Project>
-"@ | Set-Content $tempBuildProps
-        Write-Host "--> Microsoft.WindowsAppSDK.Analyzers: enabled" -ForegroundColor DarkGray
-    } else {
-        $tempBuildProps = $null  # Don't clean up a pre-existing file
-        Write-Host "--> Microsoft.WindowsAppSDK.Analyzers: skipped (existing Directory.Build.props)" -ForegroundColor DarkGray
-    }
+"@ | Set-Content -LiteralPath $tempAnalyzerTargets
+    Write-Host "--> Microsoft.WindowsAppSDK.Analyzers: enabled" -ForegroundColor DarkGray
 }
 
 Write-Host ""
@@ -183,11 +273,16 @@ try {
     if ($msbuild) {
         Write-Host "--> Building with MSBuild (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
         Write-Host "--> MSBuild: $msbuild" -ForegroundColor DarkGray
-        $allArgs = $defaultArgs + $autoArgs + @($Project) + $extraArgs
+        $allArgs = $defaultArgs + $autoArgs + @($Project) + $extraArgs +
+            @("/warnAsError:$migrationBlockingDiagnostics")
+        if ($tempAnalyzerTargets) {
+            $allArgs += "/p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
+        }
         & $msbuild $allArgs
         $buildExit = $LASTEXITCODE
     } else {
         Write-Host "--> Building with dotnet build (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
+        Write-Host "    WinUI XAML compilation can take several minutes. If the shell is still running, read the same shell again; do not start a duplicate build." -ForegroundColor DarkGray
         $dotnetArgs = @($Project)
         foreach ($a in ($autoArgs + $extraArgs)) {
             if ($a -match "^[/|-]restore$|^[/|-]t:restore$") {
@@ -198,17 +293,17 @@ try {
                 $dotnetArgs += $a
             }
         }
-        & dotnet build @dotnetArgs
+        $dotnetArgs += "--warnaserror:$migrationBlockingDiagnostics"
+        if ($tempAnalyzerTargets) {
+            $dotnetArgs += "-p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
+        }
+        & dotnet build @dotnetArgs --tl:off
         $buildExit = $LASTEXITCODE
     }
 }
 finally {
-    # Always clean up the temp Directory.Build.props we created — even on
-    # Ctrl-C, throws, or unexpected exits. Otherwise the user's project
-    # gets a stray file pointing at our analyzer that subsequent vanilla
-    # `dotnet build` invocations will fail to resolve.
-    if ($tempBuildProps -and (Test-Path $tempBuildProps)) {
-        Remove-Item $tempBuildProps -Force -ErrorAction SilentlyContinue
+    if ($tempAnalyzerTargets -and (Test-Path $tempAnalyzerTargets)) {
+        Remove-Item $tempAnalyzerTargets -Force -ErrorAction SilentlyContinue
     }
 }
 

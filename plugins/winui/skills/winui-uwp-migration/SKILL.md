@@ -18,7 +18,7 @@ Load the `winui-dev-workflow` skill before building or running. Its `BuildAndRun
 
 ## 1. Run the mechanical migration
 
-Do this before manually copying or editing source files:
+The first substantive action after loading this skill is to run this command. Before it runs, inspect only enough workspace metadata to locate the UWP project and target directory. Do not inventory or read the source files first: the generated report and merged target are the starting point for semantic analysis.
 
 ```powershell
 winapp migrate "<absolute-uwp-project-directory>" `
@@ -71,8 +71,10 @@ On failure, read the complete error set, group it by root cause, and fix each gr
 Fix:
 
 - compiler and XAML errors;
-- migration-blocking `WUI000X` diagnostics;
+- migration-blocking compatibility diagnostics (`WUI0001`–`WUI0005` and `WUI2003`);
 - missing content, resources, packages, and manifest declarations required by preserved features.
+
+WinUI XAML compilation can take several minutes. A shell status saying the command is still running is not a build failure: continue reading that same shell. Do not terminate it or start a duplicate build unless the workflow reports an error or remains inactive beyond the benchmark or user-provided timeout.
 
 Do not spend turns clearing advisory diagnostics unrelated to migration success. If repeated builds expose the same error, stop making speculative edits and inspect the full type, project, and call-site context.
 
