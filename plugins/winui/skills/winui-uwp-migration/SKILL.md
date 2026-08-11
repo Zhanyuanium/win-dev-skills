@@ -10,7 +10,7 @@ Preserve the app; do not redesign it. Keep every page, control, resource, helper
 ## Ownership
 
 - `winapp migrate` creates the WinUI project, copies the UWP source, performs safe mechanical transforms, and writes `migration-report.json`.
-- This skill builds one semantic migration plan, uses the report as evidence within that plan, then uses build-time diagnostics and a focused runtime smoke check to finish the migration.
+- This skill builds one semantic migration plan, uses the report as evidence within that plan, then uses build-time diagnostics and source-to-target state replay to finish the migration.
 - `migration-report.json` is a mechanical snapshot and evidence index. It is neither a semantic work schedule nor a complete inventory; an empty TODO list does not guarantee a buildable or runnable app.
 - Do not call `winapp migrate analyze`, `winapp migrate scaffold`, `winapp migrate validate`, or `winui-analyze`.
 
@@ -40,7 +40,13 @@ Before editing, establish one whole-app semantic model:
 
 Do not turn report categories, files, or locations into separate turns. The report points to evidence; the semantic inventory determines the edit plan.
 
-## 2. Apply one coherent migration
+## 2. Capture the source behavior baseline
+
+Before editing the target, read [Visual validation](references/visual-validation.md). Define a compact state plan that covers startup, each top-level feature path, and every migration-sensitive behavior in the semantic inventory, including nonstandard activation, lifecycle, background, and multi-window behavior when present. Capture the original UWP app at those states, including screenshots and UI trees for visual states, when it can run.
+
+Use only existing build, deployment, OS activation, `winapp run`, and `winapp ui` commands. Do not create UI automation scripts or add test code to either app. If the source cannot run, accept user-provided screenshots or recordings only when their action context and expected outcome are known. If neither runtime nor sufficient user evidence is available, record the affected behavior as `unverified`; do not infer parity from source code alone.
+
+## 3. Apply one coherent migration
 
 Fix shared causes through shared abstractions before patching call sites. For example, establish an app-owned window reference or one HWND/orientation helper, then migrate every dependent page consistently. Preserve startup order and cross-page behavior.
 
@@ -58,7 +64,7 @@ For an unknown report category, use its `summary`, `reason`, and `locations` as 
 
 When an API mapping is uncertain, consult the official [UWP to Windows App SDK mapping table](https://learn.microsoft.com/windows/apps/windows-app-sdk/migrate-to-windows-app-sdk/api-mapping-table). Never fabricate an equivalent or remove behavior merely because the first interop attempt fails. Use a visible fallback only when authoritative documentation confirms that the original behavior has no desktop equivalent. A fallback is a documented limitation, not evidence that the original feature was resolved.
 
-## 3. Build and fix in batches
+## 4. Build and fix in batches
 
 Run the `BuildAndRun.ps1` supplied by `winui-dev-workflow` in build-only mode:
 
@@ -78,26 +84,24 @@ WinUI XAML compilation can take several minutes. A shell status saying the comma
 
 Do not spend turns clearing advisory diagnostics unrelated to migration success. If repeated builds expose the same error, stop making speculative edits and inspect the full type, project, and call-site context.
 
-## 4. Run one focused smoke check
+## 5. Replay and compare the migrated app
 
 Use `BuildAndRun.ps1` without `-SkipRun`; never launch the packaged executable directly.
 
-The default smoke check verifies:
+Replay the source state plan against the migrated app with the generic commands in [Visual validation](references/visual-validation.md). Prefer stable semantic names for cross-framework UI actions; use target-specific AutomationIds only after inspecting the target UI. At each visual state, capture both the UI tree and screenshot; retain the relevant observable evidence for non-visual states.
 
-1. The primary shell renders; a blank or template-only window is failure.
-2. Startup navigation reaches the expected initial content.
-3. Startup does not immediately exit or throw.
+Compare observable outcomes, content, control presence, navigation, and relative layout. Theme, window dimensions, default styling, and rendering density may legitimately change between UWP and WinUI 3; do not use raw pixel similarity as the parity gate. Missing content, blank regions, clipping, failed actions, or an unreachable state are failures.
 
 If the app exits or turns blank, read the `winapp run --debug-output` diagnostics from the workflow and fix the runtime cause before declaring completion.
 
-Do not load a UI-testing skill, create temporary UI automation scripts, or probe every page and selector by default. Use UI automation only when the user explicitly requests exhaustive interaction validation or when a specific observed runtime failure cannot be diagnosed from build/run output. Lack of an exhaustive UI test is not parity evidence; keep unverified behavior pending.
+Do not create temporary UI automation scripts or exhaustively probe equivalent permutations. Reuse one running source instance and one running target instance, and capture one state per distinct behavior or migration risk. A launch-only smoke check is insufficient when source baseline evidence exists.
 
-## 5. Finalize the report
+## 6. Finalize the report
 
-Only after the app builds and the runtime smoke check succeeds, update `migration-report.json` once:
+Only after the app builds and planned target states have been replayed, update `migration-report.json` once:
 
 - set a TODO from `pending` to `resolved` only when the implemented code and available evidence establish that its required behavior is preserved;
-- leave fallback behavior, blocked hardware-dependent behavior, and behavior not actually verified as `pending`, and report why it is blocked or unverified;
+- leave fallback behavior, blocked hardware-dependent behavior, failed replay states, and behavior without source evidence as `pending`, and report why it is blocked or unverified;
 - do not delete TODOs, rewrite their original descriptions, or invent completion evidence.
 
-Report unresolved behavior to the user. Do not claim behavioral parity from build success or a process launch, and do not claim the migration complete while required work remains pending.
+Report unresolved behavior and the visual-validation status to the user. Do not claim behavioral or visual parity from build success or a process launch, and do not claim the migration complete while required work remains pending.
