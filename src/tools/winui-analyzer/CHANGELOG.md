@@ -30,9 +30,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`WUI0005` — residual `using Windows.UI.Core;` import** flags the exact UWP
   namespace directive without broad-matching legitimate Windows platform APIs.
 - **`WUI2004` — non-event `async void` methods** flags private parameterless
-  `*Async` methods whose unhandled exceptions can terminate a WinUI process.
+  methods whose unhandled exceptions can terminate a WinUI process, including
+  legacy methods that do not follow the `Async` naming convention.
 
 ### Changed
+- The out-of-build `winui-analyze` driver now uses the shared analyzer catalog,
+  preventing newly added rules such as WUI2004 from being omitted at migration
+  analysis time.
 - **`WUI0004` no longer recommends generic HWND COM interop.** Its message now makes
   replacement selection type-specific; `DisplayInformation` points to `XamlRoot` for DPI
   or HWND monitor orientation for rotation and explicitly rejects handwritten

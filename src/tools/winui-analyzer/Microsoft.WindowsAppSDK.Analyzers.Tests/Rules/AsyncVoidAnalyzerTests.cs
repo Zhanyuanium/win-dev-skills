@@ -25,13 +25,13 @@ class Page {
     }
 
     [Fact]
-    public async Task Wui2004FlagsImplicitlyPrivateParameterlessAsyncVoidMethod()
+    public async Task Wui2004FlagsImplicitlyPrivateMethodWithoutAsyncSuffix()
     {
         await new AnalyzerTest<AsyncVoidAnalyzer>()
             .WithSource(@"
 using System.Threading.Tasks;
 class Page {
-    async void InitializeDataAsync() { await Task.Delay(1); }
+    async void initdata() { await Task.Delay(1); }
 }")
             .ExpectDiagnostic(DiagnosticIds.ParameterlessAsyncVoid)
             .RunAsync();

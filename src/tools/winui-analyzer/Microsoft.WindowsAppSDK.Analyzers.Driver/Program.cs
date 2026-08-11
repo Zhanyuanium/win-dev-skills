@@ -10,7 +10,6 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.Text;
-using Microsoft.WindowsAppSDK.Analyzers.Rules;
 
 namespace Microsoft.WindowsAppSDK.Analyzers.Driver;
 
@@ -158,16 +157,7 @@ internal static class Program
 
     // ── Analyzer set ────────────────────────────────────────────────────────
     private static ImmutableArray<DiagnosticAnalyzer> Analyzers =>
-        ImmutableArray.Create<DiagnosticAnalyzer>(
-            new UwpApiAnalyzer(),
-            new ApiMappingAnalyzer(),
-            new XamlAnalyzer(),
-            new XamlCodeBehindAnalyzer(),
-            new TabViewContentAnalyzer(),
-            new AttachedPropertyAnalyzer(),
-            new MvvmPatternAnalyzer(),
-            new WebView2InitAnalyzer(),
-            new GenAiApiAnalyzer());
+        AnalyzerCatalog.CreateAll();
 
     private static readonly ImmutableHashSet<string> OurIds =
         Analyzers.SelectMany(a => a.SupportedDiagnostics).Select(d => d.Id).ToImmutableHashSet();
