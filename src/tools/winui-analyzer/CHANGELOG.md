@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Diagnostic.Properties`, so the driver never parses localizable message text.
 - **`WUI0005` — residual `using Windows.UI.Core;` import** flags the exact UWP
   namespace directive without broad-matching legitimate Windows platform APIs.
+- **`WUI2004` — non-event `async void` methods** flags private parameterless
+  `*Async` methods whose unhandled exceptions can terminate a WinUI process.
 
 ### Changed
 - **`WUI0004` no longer recommends generic HWND COM interop.** Its message now makes

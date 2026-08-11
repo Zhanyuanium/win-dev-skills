@@ -129,6 +129,21 @@ class C { void M() {
             .RunAsync();
     }
 
+    // ─── WUI2004 — non-event async void method ───────────────────────────────
+    [Fact]
+    public async Task SuppressWui2004()
+    {
+        await new AnalyzerTest<AsyncVoidAnalyzer>()
+            .WithSource(@"
+using System.Threading.Tasks;
+class Page {
+#pragma warning disable WUI2004
+    private async void InitializeDataAsync() { await Task.Delay(1); }
+#pragma warning restore WUI2004
+}")
+            .RunAsync();
+    }
+
     // ─── WUI3001 — Old MVVM syntax ───────────────────────────────────────────
     [Fact]
     public async Task SuppressWui3001()
