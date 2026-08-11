@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (placeholder), publishes to NuGet on a `v*` tag, and creates a GitHub Release. Manual
   dry-run available via workflow_dispatch.
 - **`WUI2004` — non-event `async void` methods** flags private parameterless
-  `*Async` methods whose unhandled exceptions can terminate a WinUI process.
+  methods whose unhandled exceptions can terminate a WinUI process, including
+  legacy methods that do not follow the `Async` naming convention.
 
 ### Changed
 - `UwpApiAnalyzer.GetForCurrentView` heuristic now consults `Allowlists`

@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-using System;
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -12,9 +11,9 @@ using Microsoft.CodeAnalysis.Diagnostics;
 namespace Microsoft.WindowsAppSDK.Analyzers.Rules;
 
 /// <summary>
-/// Detects private, parameterless <c>async void</c> methods named with the
-/// conventional <c>Async</c> suffix. These are not event handlers, and an
-/// exception after an <c>await</c> terminates a WinUI application.
+/// Detects private, parameterless <c>async void</c> methods that are not used
+/// as delegates. These are not event handlers, and an exception after an
+/// <c>await</c> terminates a WinUI application.
 /// </summary>
 [DiagnosticAnalyzer(LanguageNames.CSharp)]
 public sealed class AsyncVoidAnalyzer : DiagnosticAnalyzer
@@ -26,7 +25,7 @@ public sealed class AsyncVoidAnalyzer : DiagnosticAnalyzer
         DiagnosticCategories.Runtime,
         DiagnosticSeverity.Warning,
         isEnabledByDefault: true,
-        description: "Private parameterless methods with an Async suffix should return Task. " +
+        description: "Private parameterless non-event methods should return Task. " +
                      "Exceptions from async void methods are posted to the WinUI synchronization context and can terminate the process.",
         helpLinkUri: HelpLinks.For(DiagnosticIds.ParameterlessAsyncVoid));
 
@@ -46,8 +45,7 @@ public sealed class AsyncVoidAnalyzer : DiagnosticAnalyzer
         if (!method.Modifiers.Any(SyntaxKind.AsyncKeyword) ||
             method.ParameterList.Parameters.Count != 0 ||
             method.ReturnType is not PredefinedTypeSyntax returnType ||
-            !returnType.Keyword.IsKind(SyntaxKind.VoidKeyword) ||
-            !method.Identifier.ValueText.EndsWith("Async", StringComparison.Ordinal))
+            !returnType.Keyword.IsKind(SyntaxKind.VoidKeyword))
         {
             return;
         }
