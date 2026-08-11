@@ -146,6 +146,123 @@ function Test-AppxManifestCapabilityOrder {
     return $true
 }
 
+function Write-BuildState {
+    param(
+        [string]$Path,
+        [string]$Status,
+        [string]$ProjectPath,
+        [string]$BuildTool,
+        [datetime]$StartedAt
+    )
+
+    [ordered]@{
+        status = $Status
+        project = $ProjectPath
+        buildTool = $BuildTool
+        ownerPid = $PID
+        startedAt = $StartedAt.ToString("o")
+        updatedAt = [datetime]::UtcNow.ToString("o")
+    } | ConvertTo-Json | Set-Content -LiteralPath $Path
+}
+
+function Stop-BuildProcessTree {
+    param([int]$RootProcessId)
+
+    $processIds = [System.Collections.Generic.List[int]]::new()
+    $processIds.Add($RootProcessId)
+    try {
+        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+        for ($index = 0; $index -lt $processIds.Count; $index++) {
+            $parentId = $processIds[$index]
+            foreach ($child in @($processes | Where-Object ParentProcessId -eq $parentId)) {
+                if (-not $processIds.Contains([int]$child.ProcessId)) {
+                    $processIds.Add([int]$child.ProcessId)
+                }
+            }
+        }
+    } catch {
+        # The root process is still terminated below if CIM enumeration fails.
+    }
+
+    for ($index = $processIds.Count - 1; $index -ge 0; $index--) {
+        Stop-Process -Id $processIds[$index] -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-BuildProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$StatePath,
+        [string]$ProjectPath,
+        [datetime]$StartedAt
+    )
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $FilePath
+    $startInfo.WorkingDirectory = (Get-Location).Path
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.Arguments = ($Arguments | ForEach-Object {
+        if ($_ -eq '') {
+            '""'
+        } elseif ($_ -notmatch '[\s"]') {
+            $_
+        } else {
+            # Follow CommandLineToArgvW quoting rules for spaces, quotes, and
+            # trailing backslashes. ProcessStartInfo.ArgumentList is unavailable
+            # in Windows PowerShell 5.1.
+            $escaped = [regex]::Replace($_, '(\\*)"', '$1$1\"')
+            $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+            '"' + $escaped + '"'
+        }
+    }) -join ' '
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $completed = $false
+    $processId = $null
+
+    try {
+        if (-not $process.Start()) {
+            throw "Failed to start build process: $FilePath"
+        }
+        $processId = $process.Id
+        # Drain both pipes asynchronously to prevent a verbose compiler from
+        # filling either OS buffer while the parent emits heartbeats.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $lastHeartbeat = [datetime]::UtcNow
+
+        while (-not $process.HasExited) {
+            if (([datetime]::UtcNow - $lastHeartbeat).TotalSeconds -ge 15) {
+                $elapsed = [math]::Round(([datetime]::UtcNow - $StartedAt).TotalSeconds)
+                Write-Host "--> Build still running (PID $($process.Id), ${elapsed}s). Status: $StatePath" -ForegroundColor DarkGray
+                Write-BuildState -Path $StatePath -Status "running" -ProjectPath $ProjectPath -BuildTool $FilePath -StartedAt $StartedAt
+                $lastHeartbeat = [datetime]::UtcNow
+            }
+            Start-Sleep -Milliseconds 200
+        }
+
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        if ($stdout) { Write-Host $stdout.TrimEnd() }
+        if ($stderr) { Write-Host $stderr.TrimEnd() }
+        $completed = $true
+        return $process.ExitCode
+    }
+    finally {
+        if (-not $completed -and $processId) {
+            Stop-BuildProcessTree -RootProcessId $processId
+            try { $process.WaitForExit(5000) | Out-Null } catch {}
+        }
+        $process.Dispose()
+    }
+}
+
 # -- 0. Check Developer Mode --
 $devMode = $false
 try {
@@ -238,7 +355,7 @@ if (-not (Test-Path $analyzerDll)) {
 }
 
 $tempAnalyzerTargets = $null
-$migrationBlockingDiagnostics = "WUI0001;WUI0002;WUI0003;WUI0004;WUI0005;WUI2003"
+$migrationBlockingDiagnostics = "WUI0001;WUI0002;WUI0003;WUI0004;WUI0005;WUI2003;WUI2004"
 if (Test-Path $analyzerDll) {
     $analyzerDll = (Resolve-Path $analyzerDll).Path
     $analyzerTargets = (Resolve-Path $analyzerTargets).Path
@@ -269,6 +386,45 @@ $($existingImports -join [Environment]::NewLine)
 }
 
 Write-Host ""
+$resolvedProject = (Resolve-Path -LiteralPath $Project).Path
+$lockKeySource = "$resolvedProject|$detectedPlatform|$detectedConfig".ToUpperInvariant()
+$lockKeyBytes = [System.Text.Encoding]::UTF8.GetBytes($lockKeySource)
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $lockHashBytes = $sha256.ComputeHash($lockKeyBytes)
+}
+finally {
+    $sha256.Dispose()
+}
+$lockHash = ([BitConverter]::ToString($lockHashBytes)).Replace("-", "").Substring(0, 24)
+$buildMutex = [System.Threading.Mutex]::new($false, "Local\WinAppBuild_$lockHash")
+$lockAcquired = $false
+try {
+    try {
+        $lockAcquired = $buildMutex.WaitOne(0)
+    } catch [System.Threading.AbandonedMutexException] {
+        $lockAcquired = $true
+    }
+
+    $buildStatePath = Join-Path ([System.IO.Path]::GetTempPath()) "winapp-build-$lockHash.json"
+    if (-not $lockAcquired) {
+        Write-Host "BUILD ALREADY RUNNING for $resolvedProject" -ForegroundColor Yellow
+        if (Test-Path -LiteralPath $buildStatePath) {
+            Write-Host "Status: $buildStatePath" -ForegroundColor Yellow
+            Get-Content -LiteralPath $buildStatePath | Write-Host
+        }
+        Write-Host "Wait for the existing build instead of starting another MSBuild or dotnet process." -ForegroundColor Yellow
+        if ($tempAnalyzerTargets -and (Test-Path -LiteralPath $tempAnalyzerTargets)) {
+            Remove-Item -LiteralPath $tempAnalyzerTargets -Force -ErrorAction SilentlyContinue
+        }
+        exit 75
+    }
+
+    $buildStartedAt = [datetime]::UtcNow
+    $buildTool = if ($msbuild) { $msbuild } else { (Get-Command dotnet).Source }
+    Write-BuildState -Path $buildStatePath -Status "running" -ProjectPath $resolvedProject -BuildTool $buildTool -StartedAt $buildStartedAt
+    Write-Host "--> Build status: $buildStatePath" -ForegroundColor DarkGray
+
 try {
     if ($msbuild) {
         Write-Host "--> Building with MSBuild (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
@@ -278,8 +434,12 @@ try {
         if ($tempAnalyzerTargets) {
             $allArgs += "/p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
-        & $msbuild $allArgs
-        $buildExit = $LASTEXITCODE
+        $buildExit = Invoke-BuildProcess `
+            -FilePath $msbuild `
+            -Arguments $allArgs `
+            -StatePath $buildStatePath `
+            -ProjectPath $resolvedProject `
+            -StartedAt $buildStartedAt
     } else {
         Write-Host "--> Building with dotnet build (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
         Write-Host "    WinUI XAML compilation can take several minutes. If the shell is still running, read the same shell again; do not start a duplicate build." -ForegroundColor DarkGray
@@ -297,14 +457,29 @@ try {
         if ($tempAnalyzerTargets) {
             $dotnetArgs += "-p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
-        & dotnet build @dotnetArgs --tl:off
-        $buildExit = $LASTEXITCODE
+        $dotnetArgs += "--tl:off"
+        $buildExit = Invoke-BuildProcess `
+            -FilePath $buildTool `
+            -Arguments (@("build") + $dotnetArgs) `
+            -StatePath $buildStatePath `
+            -ProjectPath $resolvedProject `
+            -StartedAt $buildStartedAt
     }
 }
 finally {
     if ($tempAnalyzerTargets -and (Test-Path $tempAnalyzerTargets)) {
         Remove-Item $tempAnalyzerTargets -Force -ErrorAction SilentlyContinue
     }
+}
+}
+finally {
+    if ($lockAcquired) {
+        if ($buildStatePath -and (Test-Path -LiteralPath $buildStatePath)) {
+            Remove-Item -LiteralPath $buildStatePath -Force -ErrorAction SilentlyContinue
+        }
+        $buildMutex.ReleaseMutex()
+    }
+    $buildMutex.Dispose()
 }
 
 if ($buildExit -ne 0) {

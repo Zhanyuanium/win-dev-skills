@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -33,6 +34,8 @@ public sealed class AnalyzerTest<TAnalyzer> where TAnalyzer : DiagnosticAnalyzer
     private readonly List<(string path, string content)> _sources = new();
     private readonly List<(string path, string content)> _additionalFiles = new();
     private readonly List<(string id, DiagnosticSeverity? severity)> _expected = new();
+    private readonly List<(string id, string key, string value)> _expectedProps = new();
+    private readonly List<(string id, string text)> _expectedMessageParts = new();
     private bool _expectClean;
 
     public AnalyzerTest<TAnalyzer> WithSource(string source, string path = "Test0.cs")
@@ -50,6 +53,18 @@ public sealed class AnalyzerTest<TAnalyzer> where TAnalyzer : DiagnosticAnalyzer
     public AnalyzerTest<TAnalyzer> ExpectDiagnostic(string id, DiagnosticSeverity? severity = null)
     {
         _expected.Add((id, severity));
+        return this;
+    }
+
+    public AnalyzerTest<TAnalyzer> ExpectProperty(string id, string key, string value)
+    {
+        _expectedProps.Add((id, key, value));
+        return this;
+    }
+
+    public AnalyzerTest<TAnalyzer> ExpectMessageContains(string id, string text)
+    {
+        _expectedMessageParts.Add((id, text));
         return this;
     }
 
@@ -118,6 +133,25 @@ public sealed class AnalyzerTest<TAnalyzer> where TAnalyzer : DiagnosticAnalyzer
             var match = actual.FirstOrDefault(d => d.Id == exp.id);
             Assert.NotNull(match);
             Assert.Equal(exp.severity!.Value, match.Severity);
+        }
+
+        foreach (var expected in _expectedProps)
+        {
+            var match = actual.FirstOrDefault(d => d.Id == expected.id);
+            Assert.NotNull(match);
+            Assert.True(
+                match!.Properties.TryGetValue(expected.key, out var value) && value == expected.value,
+                $"Expected diagnostic {expected.id} to carry property {expected.key}={expected.value}.");
+        }
+
+        foreach (var expected in _expectedMessageParts)
+        {
+            var match = actual.FirstOrDefault(d => d.Id == expected.id);
+            Assert.NotNull(match);
+            Assert.Contains(
+                expected.text,
+                match!.GetMessage(CultureInfo.InvariantCulture),
+                StringComparison.Ordinal);
         }
     }
 

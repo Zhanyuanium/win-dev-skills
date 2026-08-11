@@ -123,6 +123,12 @@ Informational only. When code uses any namespace listed in the [Microsoft Learn 
 * **Category:** `WinUI.Runtime` · **Severity:** `Warning`
 * **Fires when:** XAML declares `<TabView>` and the matching code-behind assigns a raw control to a tab item's `Content`.
 
+### WUI2004 — Non-event async method returns `void`
+* **Category:** `WinUI.Runtime` · **Severity:** `Warning`
+* **Fires when:** A private, parameterless method whose name ends in `Async` is declared `async void`.
+* **Why:** Unlike an event handler, this method can return `Task`. Exceptions after an `await` in `async void` are posted to the WinUI synchronization context and can terminate the process. Return `Task`, then await it or explicitly discard the returned task at a synchronous call site.
+* **False-positive guards:** Parameterized callbacks, public contract methods, and event-handler-shaped methods are not reported.
+
 ### WUI2010 — Nested `x:Bind` without `FallbackValue`
 * **Category:** `WinUI.Runtime` · **Severity:** `Warning`
 * **Fires when:** An `{x:Bind A.B.C}` path has 3+ segments and lacks `FallbackValue=`.
