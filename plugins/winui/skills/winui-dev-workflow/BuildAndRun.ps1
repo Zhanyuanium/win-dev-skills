@@ -189,6 +189,67 @@ function Stop-BuildProcessTree {
     }
 }
 
+if (-not ('WinAppBuildOutputCollector' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Threading;
+
+public sealed class WinAppBuildOutputCollector
+{
+    private readonly ConcurrentQueue<string> _stdoutLines;
+    private readonly ConcurrentQueue<string> _stderrLines;
+
+    public ManualResetEventSlim StdoutClosed { get; private set; }
+    public ManualResetEventSlim StderrClosed { get; private set; }
+
+    public WinAppBuildOutputCollector()
+    {
+        _stdoutLines = new ConcurrentQueue<string>();
+        _stderrLines = new ConcurrentQueue<string>();
+        StdoutClosed = new ManualResetEventSlim(false);
+        StderrClosed = new ManualResetEventSlim(false);
+    }
+
+    public void OnOutputDataReceived(object sender, DataReceivedEventArgs eventArgs)
+    {
+        if (eventArgs.Data == null)
+        {
+            StdoutClosed.Set();
+        }
+        else
+        {
+            _stdoutLines.Enqueue(eventArgs.Data);
+        }
+    }
+
+    public void OnErrorDataReceived(object sender, DataReceivedEventArgs eventArgs)
+    {
+        if (eventArgs.Data == null)
+        {
+            StderrClosed.Set();
+        }
+        else
+        {
+            _stderrLines.Enqueue(eventArgs.Data);
+        }
+    }
+
+    public string GetStdout()
+    {
+        return string.Join(Environment.NewLine, _stdoutLines.ToArray());
+    }
+
+    public string GetStderr()
+    {
+        return string.Join(Environment.NewLine, _stderrLines.ToArray());
+    }
+
+}
+'@
+}
+
 function Invoke-BuildProcess {
     param(
         [string]$FilePath,
@@ -222,18 +283,31 @@ function Invoke-BuildProcess {
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    $collector = [WinAppBuildOutputCollector]::new()
+    $stdoutHandler = [System.Delegate]::CreateDelegate(
+        [System.Diagnostics.DataReceivedEventHandler],
+        $collector,
+        'OnOutputDataReceived')
+    $stderrHandler = [System.Delegate]::CreateDelegate(
+        [System.Diagnostics.DataReceivedEventHandler],
+        $collector,
+        'OnErrorDataReceived')
+    $process.add_OutputDataReceived($stdoutHandler)
+    $process.add_ErrorDataReceived($stderrHandler)
     $completed = $false
     $processId = $null
+    $stdoutReadStarted = $false
+    $stderrReadStarted = $false
 
     try {
         if (-not $process.Start()) {
             throw "Failed to start build process: $FilePath"
         }
         $processId = $process.Id
-        # Drain both pipes asynchronously to prevent a verbose compiler from
-        # filling either OS buffer while the parent emits heartbeats.
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.BeginOutputReadLine()
+        $stdoutReadStarted = $true
+        $process.BeginErrorReadLine()
+        $stderrReadStarted = $true
         $lastHeartbeat = [datetime]::UtcNow
 
         while (-not $process.HasExited) {
@@ -246,9 +320,23 @@ function Invoke-BuildProcess {
             Start-Sleep -Milliseconds 200
         }
 
-        $process.WaitForExit()
-        $stdout = $stdoutTask.GetAwaiter().GetResult()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $process.WaitForExit(5000) | Out-Null
+        $drainDeadline = [datetime]::UtcNow.AddSeconds(5)
+        while ((-not $collector.StdoutClosed.IsSet -or -not $collector.StderrClosed.IsSet) -and
+               [datetime]::UtcNow -lt $drainDeadline) {
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not $collector.StdoutClosed.IsSet) {
+            $process.CancelOutputRead()
+            $stdoutReadStarted = $false
+        }
+        if (-not $collector.StderrClosed.IsSet) {
+            $process.CancelErrorRead()
+            $stderrReadStarted = $false
+        }
+
+        $stdout = $collector.GetStdout()
+        $stderr = $collector.GetStderr()
         if ($stdout) { Write-Host $stdout.TrimEnd() }
         if ($stderr) { Write-Host $stderr.TrimEnd() }
         $completed = $true
@@ -259,6 +347,14 @@ function Invoke-BuildProcess {
             Stop-BuildProcessTree -RootProcessId $processId
             try { $process.WaitForExit(5000) | Out-Null } catch {}
         }
+        if ($stdoutReadStarted -and -not $collector.StdoutClosed.IsSet) {
+            try { $process.CancelOutputRead() } catch {}
+        }
+        if ($stderrReadStarted -and -not $collector.StderrClosed.IsSet) {
+            try { $process.CancelErrorRead() } catch {}
+        }
+        $process.remove_OutputDataReceived($stdoutHandler)
+        $process.remove_ErrorDataReceived($stderrHandler)
         $process.Dispose()
     }
 }
