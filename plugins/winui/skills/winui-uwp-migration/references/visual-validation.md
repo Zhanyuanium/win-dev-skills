@@ -45,6 +45,15 @@ After every action, inspect again and confirm that the expected state was reache
 
 If permissions, external data, hardware, or credentials prevent a state from running, record only that state as blocked or unverified. Do not silently replace it with a different behavior.
 
+After the last source state, inspect the source HWND for its title-bar Close element, invoke that element, and confirm the HWND is no longer listed:
+
+```powershell
+winapp ui invoke "Close" -w <source-hwnd> --json
+winapp ui list-windows --json
+```
+
+If that window does not expose a UIA Close element, stop only the exact source PID returned by `winapp run`, then confirm the HWND disappeared. Never stop `ApplicationFrameHost` or clean up by a broad process name: it can own unrelated UWP windows. Perform this cleanup immediately after source capture, including when a planned source state fails, so a later migration timeout cannot leave the source app open.
+
 ## 3. Replay against WinUI 3
 
 After the final build, launch the target through `BuildAndRun.ps1`. Use its PID with `winapp ui`; if more than one window is returned, select the intended HWND for each state rather than assuming one window covers the whole plan.
@@ -54,6 +63,8 @@ Replay the same ordered semantic actions and capture the same states under the t
 Reuse the running app while replaying states. Restart only when a state explicitly depends on clean startup or prior actions cannot be reversed.
 
 Replay nonstandard activation, lifecycle, background, and multi-window states with the same existing OS or deployment mechanism used for the source. If the environment cannot trigger or observe one of these states, mark its associated behavior `blocked` or `unverified`; a normal launch does not verify it.
+
+After the last target state, close the exact target HWND the same way and confirm it disappeared. This also lets the asynchronous `BuildAndRun.ps1` / `winapp run --debug-output` invocation finish instead of leaving a live diagnostic session.
 
 ## 4. Compare semantically
 
