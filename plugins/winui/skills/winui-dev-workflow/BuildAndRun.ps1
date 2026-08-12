@@ -526,7 +526,11 @@ try {
         Write-Host "--> Building with MSBuild (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
         Write-Host "--> MSBuild: $msbuild" -ForegroundColor DarkGray
         $allArgs = $defaultArgs + $autoArgs + @($Project) + $extraArgs +
-            @("/warnAsError:$migrationBlockingDiagnostics")
+            @(
+                "/warnAsError:$migrationBlockingDiagnostics",
+                "/nr:false",
+                "/p:UseSharedCompilation=false"
+            )
         if ($tempAnalyzerTargets) {
             $allArgs += "/p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
@@ -550,6 +554,10 @@ try {
             }
         }
         $dotnetArgs += "--warnaserror:$migrationBlockingDiagnostics"
+        # Persistent build/compiler servers can retain inherited output handles
+        # after dotnet exits, preventing non-interactive shells from completing.
+        $dotnetArgs += "--disable-build-servers"
+        $dotnetArgs += "-p:UseSharedCompilation=false"
         if ($tempAnalyzerTargets) {
             $dotnetArgs += "-p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
