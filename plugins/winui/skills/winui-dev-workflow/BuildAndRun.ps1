@@ -32,6 +32,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 
 # PowerShell binds the first unlabelled token to the positional Project parameter even
 # when it is an MSBuild property. Recover the common `-SkipRun "/p:..."` invocation by
@@ -163,200 +166,6 @@ function Write-BuildState {
         startedAt = $StartedAt.ToString("o")
         updatedAt = [datetime]::UtcNow.ToString("o")
     } | ConvertTo-Json | Set-Content -LiteralPath $Path
-}
-
-function Stop-BuildProcessTree {
-    param([int]$RootProcessId)
-
-    $processIds = [System.Collections.Generic.List[int]]::new()
-    $processIds.Add($RootProcessId)
-    try {
-        $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
-        for ($index = 0; $index -lt $processIds.Count; $index++) {
-            $parentId = $processIds[$index]
-            foreach ($child in @($processes | Where-Object ParentProcessId -eq $parentId)) {
-                if (-not $processIds.Contains([int]$child.ProcessId)) {
-                    $processIds.Add([int]$child.ProcessId)
-                }
-            }
-        }
-    } catch {
-        # The root process is still terminated below if CIM enumeration fails.
-    }
-
-    for ($index = $processIds.Count - 1; $index -ge 0; $index--) {
-        Stop-Process -Id $processIds[$index] -Force -ErrorAction SilentlyContinue
-    }
-}
-
-if (-not ('WinAppBuildOutputCollector' -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Collections.Concurrent;
-using System.Diagnostics;
-using System.Threading;
-
-public sealed class WinAppBuildOutputCollector
-{
-    private readonly ConcurrentQueue<string> _stdoutLines;
-    private readonly ConcurrentQueue<string> _stderrLines;
-
-    public ManualResetEventSlim StdoutClosed { get; private set; }
-    public ManualResetEventSlim StderrClosed { get; private set; }
-
-    public WinAppBuildOutputCollector()
-    {
-        _stdoutLines = new ConcurrentQueue<string>();
-        _stderrLines = new ConcurrentQueue<string>();
-        StdoutClosed = new ManualResetEventSlim(false);
-        StderrClosed = new ManualResetEventSlim(false);
-    }
-
-    public void OnOutputDataReceived(object sender, DataReceivedEventArgs eventArgs)
-    {
-        if (eventArgs.Data == null)
-        {
-            StdoutClosed.Set();
-        }
-        else
-        {
-            _stdoutLines.Enqueue(eventArgs.Data);
-        }
-    }
-
-    public void OnErrorDataReceived(object sender, DataReceivedEventArgs eventArgs)
-    {
-        if (eventArgs.Data == null)
-        {
-            StderrClosed.Set();
-        }
-        else
-        {
-            _stderrLines.Enqueue(eventArgs.Data);
-        }
-    }
-
-    public string GetStdout()
-    {
-        return string.Join(Environment.NewLine, _stdoutLines.ToArray());
-    }
-
-    public string GetStderr()
-    {
-        return string.Join(Environment.NewLine, _stderrLines.ToArray());
-    }
-
-}
-'@
-}
-
-function Invoke-BuildProcess {
-    param(
-        [string]$FilePath,
-        [string[]]$Arguments,
-        [string]$StatePath,
-        [string]$ProjectPath,
-        [datetime]$StartedAt
-    )
-
-    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $FilePath
-    $startInfo.WorkingDirectory = (Get-Location).Path
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $startInfo.Arguments = ($Arguments | ForEach-Object {
-        if ($_ -eq '') {
-            '""'
-        } elseif ($_ -notmatch '[\s"]') {
-            $_
-        } else {
-            # Follow CommandLineToArgvW quoting rules for spaces, quotes, and
-            # trailing backslashes. ProcessStartInfo.ArgumentList is unavailable
-            # in Windows PowerShell 5.1.
-            $escaped = [regex]::Replace($_, '(\\*)"', '$1$1\"')
-            $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
-            '"' + $escaped + '"'
-        }
-    }) -join ' '
-
-    $process = [System.Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    $collector = [WinAppBuildOutputCollector]::new()
-    $stdoutHandler = [System.Delegate]::CreateDelegate(
-        [System.Diagnostics.DataReceivedEventHandler],
-        $collector,
-        'OnOutputDataReceived')
-    $stderrHandler = [System.Delegate]::CreateDelegate(
-        [System.Diagnostics.DataReceivedEventHandler],
-        $collector,
-        'OnErrorDataReceived')
-    $process.add_OutputDataReceived($stdoutHandler)
-    $process.add_ErrorDataReceived($stderrHandler)
-    $completed = $false
-    $processId = $null
-    $stdoutReadStarted = $false
-    $stderrReadStarted = $false
-
-    try {
-        if (-not $process.Start()) {
-            throw "Failed to start build process: $FilePath"
-        }
-        $processId = $process.Id
-        $process.BeginOutputReadLine()
-        $stdoutReadStarted = $true
-        $process.BeginErrorReadLine()
-        $stderrReadStarted = $true
-        $lastHeartbeat = [datetime]::UtcNow
-
-        while (-not $process.HasExited) {
-            if (([datetime]::UtcNow - $lastHeartbeat).TotalSeconds -ge 15) {
-                $elapsed = [math]::Round(([datetime]::UtcNow - $StartedAt).TotalSeconds)
-                Write-Host "--> Build still running (PID $($process.Id), ${elapsed}s). Status: $StatePath" -ForegroundColor DarkGray
-                Write-BuildState -Path $StatePath -Status "running" -ProjectPath $ProjectPath -BuildTool $FilePath -StartedAt $StartedAt
-                $lastHeartbeat = [datetime]::UtcNow
-            }
-            Start-Sleep -Milliseconds 200
-        }
-
-        $process.WaitForExit(5000) | Out-Null
-        $drainDeadline = [datetime]::UtcNow.AddSeconds(5)
-        while ((-not $collector.StdoutClosed.IsSet -or -not $collector.StderrClosed.IsSet) -and
-               [datetime]::UtcNow -lt $drainDeadline) {
-            Start-Sleep -Milliseconds 50
-        }
-        if (-not $collector.StdoutClosed.IsSet) {
-            $process.CancelOutputRead()
-            $stdoutReadStarted = $false
-        }
-        if (-not $collector.StderrClosed.IsSet) {
-            $process.CancelErrorRead()
-            $stderrReadStarted = $false
-        }
-
-        $stdout = $collector.GetStdout()
-        $stderr = $collector.GetStderr()
-        if ($stdout) { Write-Host $stdout.TrimEnd() }
-        if ($stderr) { Write-Host $stderr.TrimEnd() }
-        $completed = $true
-        return $process.ExitCode
-    }
-    finally {
-        if (-not $completed -and $processId) {
-            Stop-BuildProcessTree -RootProcessId $processId
-            try { $process.WaitForExit(5000) | Out-Null } catch {}
-        }
-        if ($stdoutReadStarted -and -not $collector.StdoutClosed.IsSet) {
-            try { $process.CancelOutputRead() } catch {}
-        }
-        if ($stderrReadStarted -and -not $collector.StderrClosed.IsSet) {
-            try { $process.CancelErrorRead() } catch {}
-        }
-        $process.remove_OutputDataReceived($stdoutHandler)
-        $process.remove_ErrorDataReceived($stderrHandler)
-        $process.Dispose()
-    }
 }
 
 # -- 0. Check Developer Mode --
@@ -522,6 +331,8 @@ try {
     Write-Host "--> Build status: $buildStatePath" -ForegroundColor DarkGray
 
 try {
+    # Keep build output attached to the caller. Redirected async pipes can remain
+    # open after the root process exits when compiler descendants inherit them.
     if ($msbuild) {
         Write-Host "--> Building with MSBuild (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
         Write-Host "--> MSBuild: $msbuild" -ForegroundColor DarkGray
@@ -534,12 +345,8 @@ try {
         if ($tempAnalyzerTargets) {
             $allArgs += "/p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
-        $buildExit = Invoke-BuildProcess `
-            -FilePath $msbuild `
-            -Arguments $allArgs `
-            -StatePath $buildStatePath `
-            -ProjectPath $resolvedProject `
-            -StartedAt $buildStartedAt
+        & $msbuild @allArgs
+        $buildExit = $LASTEXITCODE
     } else {
         Write-Host "--> Building with dotnet build (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
         Write-Host "    WinUI XAML compilation can take several minutes. If the shell is still running, read the same shell again; do not start a duplicate build." -ForegroundColor DarkGray
@@ -562,12 +369,8 @@ try {
             $dotnetArgs += "-p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
         $dotnetArgs += "--tl:off"
-        $buildExit = Invoke-BuildProcess `
-            -FilePath $buildTool `
-            -Arguments (@("build") + $dotnetArgs) `
-            -StatePath $buildStatePath `
-            -ProjectPath $resolvedProject `
-            -StartedAt $buildStartedAt
+        & $buildTool build @dotnetArgs
+        $buildExit = $LASTEXITCODE
     }
 }
 finally {
