@@ -80,7 +80,7 @@ Do not spend turns clearing advisory diagnostics unrelated to migration success.
 
 ## 4. Run one focused smoke check
 
-Use `BuildAndRun.ps1` without `-SkipRun`; never launch the packaged executable directly.
+Use `BuildAndRun.ps1 -Detach` for the smoke check; never launch the packaged executable directly. If the detached app exits or turns blank, rerun without `-Detach` to collect `--debug-output` diagnostics.
 
 The default smoke check verifies:
 
