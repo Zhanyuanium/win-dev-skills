@@ -46,6 +46,8 @@ Before editing the target, read [Visual validation](references/visual-validation
 
 Use only existing build, deployment, OS activation, `winapp run`, and `winapp ui` commands. Do not create UI automation scripts or add test code to either app. If the source cannot run, accept user-provided screenshots or recordings only when their action context and expected outcome are known. If neither runtime nor sufficient user evidence is available, record the affected behavior as `unverified`; do not infer parity from source code alone.
 
+After the last source state is captured, close that exact source window by HWND and confirm it disappeared before editing the target. Do not leave the source app running during migration. Never terminate `ApplicationFrameHost` or use a broad process-name cleanup because it can host unrelated UWP windows.
+
 ## 3. Apply one coherent migration
 
 Fix shared causes through shared abstractions before patching call sites. For example, establish an app-owned window reference or one HWND/orientation helper, then migrate every dependent page consistently. Preserve startup order and cross-page behavior.
@@ -94,7 +96,7 @@ Compare observable outcomes, content, control presence, navigation, and relative
 
 If the app exits or turns blank, read the `winapp run --debug-output` diagnostics from the workflow and fix the runtime cause before declaring completion.
 
-Do not create temporary UI automation scripts or exhaustively probe equivalent permutations. Reuse one running source instance and one running target instance, and capture one state per distinct behavior or migration risk. A launch-only smoke check is insufficient when source baseline evidence exists.
+Do not create temporary UI automation scripts or exhaustively probe equivalent permutations. Reuse one source instance within source capture and one target instance within target replay, closing each immediately after its phase. Capture one state per distinct behavior or migration risk. A launch-only smoke check is insufficient when source baseline evidence exists.
 
 ## 6. Finalize the report
 
