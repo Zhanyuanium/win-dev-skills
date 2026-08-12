@@ -88,7 +88,7 @@ Do not spend turns clearing advisory diagnostics unrelated to migration success.
 
 ## 5. Replay and compare the migrated app
 
-Use `BuildAndRun.ps1` without `-SkipRun`; never launch the packaged executable directly.
+Use `BuildAndRun.ps1 -Detach` for target replay; never launch the packaged executable directly. If the detached app exits or turns blank, rerun without `-Detach` to collect `--debug-output` diagnostics.
 
 Replay the source state plan against the migrated app with the generic commands in [Visual validation](references/visual-validation.md). Prefer stable semantic names for cross-framework UI actions; use target-specific AutomationIds only after inspecting the target UI. At each visual state, capture both the UI tree and screenshot; retain the relevant observable evidence for non-visual states.
 
