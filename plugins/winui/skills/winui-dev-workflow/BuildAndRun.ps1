@@ -155,17 +155,79 @@ function Write-BuildState {
         [string]$Status,
         [string]$ProjectPath,
         [string]$BuildTool,
-        [datetime]$StartedAt
+        [datetime]$StartedAt,
+        [string]$OutputLog
     )
 
     [ordered]@{
         status = $Status
         project = $ProjectPath
         buildTool = $BuildTool
+        outputLog = $OutputLog
         ownerPid = $PID
         startedAt = $StartedAt.ToString("o")
         updatedAt = [datetime]::UtcNow.ToString("o")
     } | ConvertTo-Json | Set-Content -LiteralPath $Path
+}
+
+function Write-BuildResult {
+    param(
+        [string]$Path,
+        [int]$ExitCode
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        Write-Host "WARNING: Build output log was not created: $Path" -ForegroundColor Yellow
+        return
+    }
+
+    $lines = @(Get-Content -LiteralPath $Path)
+    if ($ExitCode -ne 0) {
+        $selected = @($lines | Where-Object {
+            $_ -match '(?i)\berror\b' -or
+            $_ -match '(?i)build failed' -or
+            $_ -match '(?i)time elapsed' -or
+            $_ -match '^\s*\d+\s+(?:Warning|Error)\(s\)'
+        })
+        if ($selected.Count -eq 0) {
+            $selected = @($lines | Select-Object -Last 80)
+        }
+    } else {
+        $selected = @($lines | Where-Object {
+            $_ -match '(?i)build succeeded' -or
+            $_ -match '(?i)time elapsed' -or
+            $_ -match '^\s*\d+\s+(?:Warning|Error)\(s\)'
+        })
+        if ($selected.Count -eq 0) {
+            $selected = @($lines | Select-Object -Last 20)
+        }
+    }
+
+    $selected = @($selected | Select-Object -Unique)
+    foreach ($line in $selected) {
+        Write-Host $line
+    }
+    Write-Host "--> Full build log: $Path" -ForegroundColor DarkGray
+}
+
+function Invoke-LoggedNativeCommand {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$OutputLog
+    )
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # Windows PowerShell 5.1 surfaces redirected native stderr as an
+        # ErrorRecord. Keep it in the log without aborting before ExitCode.
+        $ErrorActionPreference = 'Continue'
+        & $FilePath @Arguments *> $OutputLog
+        return $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 }
 
 # -- 0. Check Developer Mode --
@@ -312,6 +374,7 @@ try {
     }
 
     $buildStatePath = Join-Path ([System.IO.Path]::GetTempPath()) "winapp-build-$lockHash.json"
+    $buildLogPath = Join-Path ([System.IO.Path]::GetTempPath()) "winapp-build-$lockHash.log"
     if (-not $lockAcquired) {
         Write-Host "BUILD ALREADY RUNNING for $resolvedProject" -ForegroundColor Yellow
         if (Test-Path -LiteralPath $buildStatePath) {
@@ -327,12 +390,13 @@ try {
 
     $buildStartedAt = [datetime]::UtcNow
     $buildTool = if ($msbuild) { $msbuild } else { (Get-Command dotnet).Source }
-    Write-BuildState -Path $buildStatePath -Status "running" -ProjectPath $resolvedProject -BuildTool $buildTool -StartedAt $buildStartedAt
+    Remove-Item -LiteralPath $buildLogPath -Force -ErrorAction SilentlyContinue
+    Write-BuildState -Path $buildStatePath -Status "running" -ProjectPath $resolvedProject -BuildTool $buildTool -StartedAt $buildStartedAt -OutputLog $buildLogPath
     Write-Host "--> Build status: $buildStatePath" -ForegroundColor DarkGray
 
 try {
-    # Keep build output attached to the caller. Redirected async pipes can remain
-    # open after the root process exits when compiler descendants inherit them.
+    # File-first capture avoids native output handles keeping an automated shell
+    # open after the root build process exits.
     if ($msbuild) {
         Write-Host "--> Building with MSBuild (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
         Write-Host "--> MSBuild: $msbuild" -ForegroundColor DarkGray
@@ -345,8 +409,8 @@ try {
         if ($tempAnalyzerTargets) {
             $allArgs += "/p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
-        & $msbuild @allArgs
-        $buildExit = $LASTEXITCODE
+        $buildExit = Invoke-LoggedNativeCommand -FilePath $msbuild -Arguments $allArgs -OutputLog $buildLogPath
+        Write-BuildResult -Path $buildLogPath -ExitCode $buildExit
     } else {
         Write-Host "--> Building with dotnet build (Platform: $detectedPlatform, Config: $detectedConfig)" -ForegroundColor Cyan
         Write-Host "    WinUI XAML compilation can take several minutes. If the shell is still running, read the same shell again; do not start a duplicate build." -ForegroundColor DarkGray
@@ -369,8 +433,8 @@ try {
             $dotnetArgs += "-p:CustomAfterMicrosoftCommonTargets=$tempAnalyzerTargets"
         }
         $dotnetArgs += "--tl:off"
-        & $buildTool build @dotnetArgs
-        $buildExit = $LASTEXITCODE
+        $buildExit = Invoke-LoggedNativeCommand -FilePath $buildTool -Arguments (@("build") + $dotnetArgs) -OutputLog $buildLogPath
+        Write-BuildResult -Path $buildLogPath -ExitCode $buildExit
     }
 }
 finally {
