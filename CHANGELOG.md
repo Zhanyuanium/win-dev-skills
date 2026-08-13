@@ -26,6 +26,10 @@ The `version-bump` and `changelog-entry` CI jobs enforce this.
 - `winui-*` skills can now be discovered by **OpenCode** by linking the shared
   `plugins/winui/skills/` directory into an OpenCode skills directory - no skill
   fork or copy required.
+- `winui-session-report` can now parse **OpenCode** sessions from `opencode export`
+  output (run `Analyze-Session.ps1 -Format OpenCode -SessionId <id>` or
+  `-EventsFile` on a saved export JSON), producing the same report as Copilot CLI
+  and Claude Code.
 
 ### Changed
 
