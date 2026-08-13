@@ -322,7 +322,7 @@ if (-not (Test-Path $analyzerDll)) {
 }
 
 $tempAnalyzerTargets = $null
-$migrationBlockingDiagnostics = "WUI0001;WUI0002;WUI0003;WUI0004;WUI0005;WUI2003;WUI2004"
+$migrationBlockingDiagnostics = "WUI0001;WUI0002;WUI0003;WUI0004;WUI0005;WUI2003;WUI2004;WUI2005"
 if (Test-Path $analyzerDll) {
     $analyzerDll = (Resolve-Path $analyzerDll).Path
     $analyzerTargets = (Resolve-Path $analyzerTargets).Path

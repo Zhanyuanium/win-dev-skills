@@ -71,7 +71,7 @@ On failure, read the complete error set, group it by root cause, and fix each gr
 Fix:
 
 - compiler and XAML errors;
-- migration-blocking compatibility diagnostics (`WUI0001`–`WUI0005` and `WUI2003`);
+- migration-blocking compatibility/runtime diagnostics (`WUI0001`–`WUI0005` and `WUI2003`–`WUI2005`);
 - missing content, resources, packages, and manifest declarations required by preserved features.
 
 WinUI XAML compilation can take several minutes. A shell status saying the command is still running is not a build failure: continue reading that same shell. Do not terminate it or start a duplicate build unless the workflow reports an error or remains inactive beyond the benchmark or user-provided timeout.
