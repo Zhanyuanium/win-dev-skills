@@ -30,6 +30,7 @@ The `version-bump` and `changelog-entry` CI jobs enforce this.
   output (run `Analyze-Session.ps1 -Format OpenCode -SessionId <id>` or
   `-EventsFile` on a saved export JSON), producing the same report as Copilot CLI
   and Claude Code.
+- Added an OpenCode `winui-dev` orchestrator agent (`plugins/winui/opencode/agent/winui-dev.md`) that loads `winui-dev-workflow` and `winui-design` on demand, so OpenCode users can run `opencode run --agent winui-dev` for end-to-end WinUI 3 builds.
 
 ### Changed
 
