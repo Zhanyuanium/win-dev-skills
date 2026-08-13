@@ -29,6 +29,7 @@ internal static class DiagnosticIds
     public const string TabViewRawContentXaml      = "WUI2002"; // ex-WUI021 (cross-file variant)
     public const string UwpOnlyXamlControl         = "WUI2003"; // UWP-only XAML control with no WinUI 3 equivalent
     public const string ParameterlessAsyncVoid     = "WUI2004"; // non-event async void can terminate the app
+    public const string VirtualizedResetDropsCache = "WUI2005"; // range cache rebuilt without replaying tracked ranges
     // 201x = XAML binding (x:Bind)
     public const string XBindNestedNoFallback      = "WUI2010"; // ex-WUI007
     public const string XBindMissingMode           = "WUI2011"; // ex-WUI011

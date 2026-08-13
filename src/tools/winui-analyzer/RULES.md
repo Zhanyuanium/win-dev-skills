@@ -151,6 +151,12 @@ Informational only. When code uses any namespace listed in the [Microsoft Learn 
 * **Why:** Unlike an event handler, this method can return `Task`. Exceptions after an `await` in `async void` are posted to the WinUI synchronization context and can terminate the process. Return `Task`, then await it or explicitly discard the returned task at a synchronous call site.
 * **False-positive guards:** Parameterized callbacks, public contract methods, and event-handler-shaped methods are not reported.
 
+### WUI2005 — Virtualized reset drops the rebuilt range cache
+* **Category:** `WinUI.Runtime` · **Severity:** `Warning`
+* **Fires when:** An `IItemsRangeInfo` implementation replaces a field used by `RangesChanged`, raises `NotifyCollectionChangedAction.Reset`, and does not call that field's `UpdateRanges` after the reset.
+* **Why:** When the item count and visible range remain unchanged, WinUI 3 may not invoke `RangesChanged` again after `Reset`. A replacement cache therefore remains empty and the list loses all rendered items. Retain the last tracked ranges and replay them into the new cache after raising the reset.
+* **False-positive guards:** Ordinary observable collections, resets that preserve the existing range cache, and reset paths that explicitly replay `UpdateRanges` are not reported.
+
 ### WUI2010 — Nested `x:Bind` without `FallbackValue`
 * **Category:** `WinUI.Runtime` · **Severity:** `Warning`
 * **Fires when:** An `{x:Bind A.B.C}` path has 3+ segments and lacks `FallbackValue=`.

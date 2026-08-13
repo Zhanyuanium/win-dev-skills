@@ -20,6 +20,7 @@ public static class AnalyzerCatalog
             new XamlCodeBehindAnalyzer(),
             new TabViewContentAnalyzer(),
             new AsyncVoidAnalyzer(),
+            new VirtualizedCollectionResetAnalyzer(),
             new AttachedPropertyAnalyzer(),
             new MvvmPatternAnalyzer(),
             new WebView2InitAnalyzer(),
