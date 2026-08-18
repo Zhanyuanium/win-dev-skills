@@ -23,6 +23,18 @@ The `version-bump` and `changelog-entry` CI jobs enforce this.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+### Deprecated
+
+## [0.6.0] — 2026-08-18
+
+### Added
+
 - `winui-*` skills can now be discovered by **OpenCode** by linking the shared
   `plugins/winui/skills/` directory into an OpenCode skills directory - no skill
   fork or copy required.
