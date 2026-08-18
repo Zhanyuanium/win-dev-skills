@@ -31,6 +31,30 @@ The `version-bump` and `changelog-entry` CI jobs enforce this.
 
 ### Deprecated
 
+## [0.6.0] — 2026-08-18
+
+### Added
+
+- `winui-*` skills can now be discovered by **OpenCode** by linking the shared
+  `plugins/winui/skills/` directory into an OpenCode skills directory - no skill
+  fork or copy required.
+- `winui-session-report` can now parse **OpenCode** sessions from `opencode export`
+  output (run `Analyze-Session.ps1 -Format OpenCode -SessionId <id>` or
+  `-EventsFile` on a saved export JSON), producing the same report as Copilot CLI
+  and Claude Code.
+- Added an OpenCode `winui-dev` orchestrator agent (`plugins/winui/opencode/agent/winui-dev.md`) that loads `winui-dev-workflow` and `winui-design` on demand, so OpenCode users can run `opencode run --agent winui-dev` for end-to-end WinUI 3 builds.
+
+### Changed
+
+- `winui-setup` now gives harness-neutral post-setup guidance while preserving the
+  GitHub Copilot CLI invocation example.
+
+### Fixed
+
+### Removed
+
+### Deprecated
+
 ## [0.5.0] — 2026-07-21
 
 ### Added

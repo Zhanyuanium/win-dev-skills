@@ -91,6 +91,47 @@ Verify the eight skills loaded with `openclaw skills list` (each shows `✓ read
 > **Note:** OpenClaw maps skills, not agents, so the `winui-dev` orchestrator agent isn't exposed there. The skills still work - ask the agent for a WinUI task and it loads the relevant skill on demand.
 </details>
 
+<details>
+<summary><strong>OpenCode</strong></summary>
+
+OpenCode ships a `winui-dev` orchestrator agent that loads the shared skills and
+does the WinUI 3 build work end to end. Link the agent and the skills it depends
+on into OpenCode's global config directory (no fork or copy needed):
+
+```powershell
+# One-time setup: link the agent + shared skills into OpenCode's global config
+$src = "C:\path\to\win-dev-skills\plugins\winui"
+$dst = "$env:USERPROFILE\.config\opencode"
+New-Item -ItemType Directory -Force "$dst\agent", "$dst\skills" | Out-Null
+
+# Shared skills (loaded on demand by the agent)
+Get-ChildItem "$src\skills" -Directory | ForEach-Object {
+  $link = Join-Path "$dst\skills" $_.Name
+  if (-not (Test-Path $link)) {
+    New-Item -ItemType Junction -Path $link -Target $_.FullName | Out-Null
+  }
+}
+
+# Orchestrator agent
+$agent = "$dst\agent\winui-dev.md"
+if (-not (Test-Path $agent)) {
+  New-Item -ItemType Junction -Path $agent -Target "$src\opencode\agent\winui-dev.md" | Out-Null
+}
+```
+
+Because these are junctions (not copies), `git pull` in the repo picks up upstream
+updates automatically. Then start OpenCode with the orchestrator:
+
+```powershell
+opencode run --agent winui-dev
+```
+
+The `winui-dev` agent loads `winui-dev-workflow` (build & run) and `winui-design`
+(Fluent Design, control selection, and `winui-search.exe` for grounded lookup) on
+demand, so there's no need to invoke the skills manually. The individual skills can
+also be invoked by name (e.g. `/winui-setup`) as usual.
+</details>
+
 Then start a new session and run the `winui-setup` skill with `/winui-setup`.
 
 Once setup is done, try a real task:
@@ -152,7 +193,7 @@ Each skill is a focused, self-contained playbook. The agent loads `winui-design`
 | **`winui-ui-testing`** | Automated UI testing — generates a batch test script, runs all tests in one pass, reads results. Covers element assertions, interactions, value checks (TextBox, ComboBox, ToggleSwitch), file pickers, flyouts, dialogs, persistence, accessibility audits. |
 | **`winui-packaging`** | MSIX packaging, code signing, and distribution — release builds, certificate generation (`winapp cert generate`), trust, signing (`winapp sign`), self-contained deployment, GitHub Actions CI/CD, and Microsoft Store submission. |
 | **`winui-wpf-migration`** | WPF → WinUI 3 migration — namespace replacement, control mapping (`DataGrid` → `ListView`, `WrapPanel` → `ItemsRepeater`, `TabControl` → `TabView`), `Dispatcher` → `DispatcherQueue`, `System.Drawing` → `BitmapImage`, MVVM conversion to CommunityToolkit.Mvvm, `DynamicResource` → `ThemeResource`. |
-| **`winui-session-report`** | Diagnostic report on the current or a recent Copilot session. Use when filing a bug, debugging agent behaviour, or reviewing what happened during a build session. |
+| **`winui-session-report`** | Diagnostic report on the current or a recent GitHub Copilot CLI, Claude Code, or OpenCode session. Use when filing a bug, debugging agent behaviour, or reviewing what happened during a build session. |
 | **`winui-setup`** | Install and verify machine prerequisites — .NET SDK 10, the WinApp CLI, the WinUI 3 .NET templates, and Developer Mode. Idempotent. **User-invoked only** — run it explicitly with `/winui-setup` to set up a fresh machine; the agent will not load it on its own and will instead ask you to run it if a later command fails because a prerequisite is missing. |
 
 ## The tools we lean on
@@ -174,7 +215,7 @@ Several skills ship helper binaries and PowerShell scripts that run under your u
 | **`winmd.exe`** (winmd-cli) | [`src/tools/winmd-cli/`](src/tools/winmd-cli/) | Native-AOT WinRT/.NET metadata indexer. The agent uses it to verify an API actually exists and has the signature it thinks it does — *before* writing code that won't compile. Reads `.winmd` and managed `.dll` metadata from NuGet, the Windows SDK, and WinAppSDK and returns the same XML doc text Visual Studio IntelliSense uses. | Publish as a `dotnet tool` on NuGet, or fold relevant subcommands into [`winappcli`](https://github.com/microsoft/winappcli). |
 | **`winui-search.exe`** (winui-search) | [`src/tools/winui-search/`](src/tools/winui-search/) | Native-AOT BM25 search over [WinUI Gallery](https://github.com/microsoft/WinUI-Gallery), [CommunityToolkit/Windows](https://github.com/CommunityToolkit/Windows), and [microsoft-ui-reactor](https://github.com/microsoft/microsoft-ui-reactor) scenarios. Lets the agent see real shipping samples for a control before writing a single line of XAML. Embedded JSON snapshots ship offline; live refresh via `winui-search update`. **Distributed today as a prebuilt unsigned exe inside the `winui-design` skill payload**, verified on every PR by the `winui-search-provenance` CI job. | Same as `winmd-cli` — `dotnet tool`, fold into `winappcli`, or expose over a small MCP server. |
 | **`BuildAndRun.ps1`** | [`plugins/winui/skills/winui-dev-workflow/BuildAndRun.ps1`](plugins/winui/skills/winui-dev-workflow/BuildAndRun.ps1) | Builds with `dotnet build` (checks Developer Mode, auto-detects platform, injects the WinAppSDK analyzer), then hands off to `winapp run`. Can optionally build with Visual Studio's MSBuild via `-UseMSBuild`. | The MSBuild path is now optional — current Windows App SDK releases surface XAML errors under `dotnet build`, so it defaults to `dotnet build`. Kept as a convenience wrapper; candidate to fold into [`winappcli`](https://github.com/microsoft/winappcli). |
-| **`Analyze-Session.ps1`** | [`plugins/winui/skills/winui-session-report/Analyze-Session.ps1`](plugins/winui/skills/winui-session-report/Analyze-Session.ps1) | Reads your local Copilot session events and produces a `session-report.md` for bug filing. **The report can include excerpts of your prompts, file paths, and command output — review it before sharing.** The skill prints a privacy notice when it runs. | Fold into the `copilot` CLI as a session-report subcommand, or publish as a `dotnet tool`. |
+| **`Analyze-Session.ps1`** | [`plugins/winui/skills/winui-session-report/Analyze-Session.ps1`](plugins/winui/skills/winui-session-report/Analyze-Session.ps1) | Reads your local GitHub Copilot CLI, Claude Code, or OpenCode session events and produces a `session-report.md` for bug filing. **The report can include excerpts of your prompts, file paths, and command output — review it before sharing.** The skill prints a privacy notice when it runs. | Fold into the `copilot` CLI as a session-report subcommand, or publish as a `dotnet tool`. |
 
 If any of this is a deal-breaker for your environment, please [open an issue](https://github.com/microsoft/win-dev-skills/issues) — that feedback is what determines how quickly each item moves out of "preview, ships from repo" into "signed package on a registry".
 
